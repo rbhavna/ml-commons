@@ -25,6 +25,7 @@ import org.opensearch.action.support.ActionFilters;
 import org.opensearch.client.Client;
 import org.opensearch.common.settings.Settings;
 import org.opensearch.common.util.concurrent.ThreadContext;
+import org.opensearch.common.xcontent.NamedXContentRegistry;
 import org.opensearch.ml.common.transport.task.MLTaskDeleteRequest;
 import org.opensearch.test.OpenSearchTestCase;
 import org.opensearch.threadpool.ThreadPool;
@@ -48,6 +49,8 @@ public class DeleteTaskTransportActionTests extends OpenSearchTestCase {
 
     @Mock
     DeleteResponse deleteResponse;
+    @Mock
+    NamedXContentRegistry xContentRegistry;
 
     @Rule
     public ExpectedException exceptionRule = ExpectedException.none();
@@ -61,7 +64,7 @@ public class DeleteTaskTransportActionTests extends OpenSearchTestCase {
         MockitoAnnotations.openMocks(this);
 
         mlTaskDeleteRequest = MLTaskDeleteRequest.builder().taskId("test_id").build();
-        deleteTaskTransportAction = spy(new DeleteTaskTransportAction(transportService, actionFilters, client));
+        deleteTaskTransportAction = spy(new DeleteTaskTransportAction(transportService, actionFilters, client, xContentRegistry));
 
         Settings settings = Settings.builder().build();
         threadContext = new ThreadContext(settings);
