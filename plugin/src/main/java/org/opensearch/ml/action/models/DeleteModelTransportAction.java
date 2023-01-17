@@ -5,12 +5,11 @@
 
 package org.opensearch.ml.action.models;
 
+import static org.opensearch.common.xcontent.XContentParserUtils.ensureExpectedToken;
 import static org.opensearch.ml.common.CommonValue.ML_MODEL_INDEX;
 import static org.opensearch.ml.common.MLModel.MODEL_ID_FIELD;
-
-import lombok.AccessLevel;
-import lombok.experimental.FieldDefaults;
-import lombok.extern.log4j.Log4j2;
+import static org.opensearch.ml.utils.MLNodeUtils.createXContentParserFromRegistry;
+import static org.opensearch.ml.utils.RestActionUtils.getFetchSourceContext;
 
 import org.opensearch.OpenSearchStatusException;
 import org.opensearch.ResourceNotFoundException;
@@ -18,22 +17,35 @@ import org.opensearch.action.ActionListener;
 import org.opensearch.action.ActionRequest;
 import org.opensearch.action.delete.DeleteRequest;
 import org.opensearch.action.delete.DeleteResponse;
+import org.opensearch.action.get.GetRequest;
 import org.opensearch.action.support.ActionFilters;
 import org.opensearch.action.support.HandledTransportAction;
 import org.opensearch.client.Client;
 import org.opensearch.common.inject.Inject;
 import org.opensearch.common.util.concurrent.ThreadContext;
+import org.opensearch.common.xcontent.NamedXContentRegistry;
+import org.opensearch.common.xcontent.XContentParser;
+import org.opensearch.index.IndexNotFoundException;
 import org.opensearch.index.query.TermsQueryBuilder;
 import org.opensearch.index.reindex.BulkByScrollResponse;
 import org.opensearch.index.reindex.DeleteByQueryAction;
 import org.opensearch.index.reindex.DeleteByQueryRequest;
+import org.opensearch.ml.common.MLModel;
+import org.opensearch.ml.common.exception.MLResourceNotFoundException;
+import org.opensearch.ml.common.model.MLModelState;
 import org.opensearch.ml.common.transport.model.MLModelDeleteAction;
 import org.opensearch.ml.common.transport.model.MLModelDeleteRequest;
+import org.opensearch.ml.common.transport.model.MLModelGetRequest;
 import org.opensearch.rest.RestStatus;
+import org.opensearch.search.fetch.subphase.FetchSourceContext;
 import org.opensearch.tasks.Task;
 import org.opensearch.transport.TransportService;
 
 import com.google.common.annotations.VisibleForTesting;
+
+import lombok.AccessLevel;
+import lombok.experimental.FieldDefaults;
+import lombok.extern.log4j.Log4j2;
 
 @Log4j2
 @FieldDefaults(makeFinal = true, level = AccessLevel.PRIVATE)
@@ -44,20 +56,71 @@ public class DeleteModelTransportAction extends HandledTransportAction<ActionReq
     static final String SEARCH_FAILURE_MSG = "Search failure while deleting model of ";
     static final String OS_STATUS_EXCEPTION_MESSAGE = "Failed to delete all model chunks";
     Client client;
+    NamedXContentRegistry xContentRegistry;
 
     @Inject
-    public DeleteModelTransportAction(TransportService transportService, ActionFilters actionFilters, Client client) {
+    public DeleteModelTransportAction(TransportService transportService, ActionFilters actionFilters, Client client, NamedXContentRegistry xContentRegistry) {
         super(MLModelDeleteAction.NAME, transportService, actionFilters, MLModelDeleteRequest::new);
         this.client = client;
+        this.xContentRegistry = xContentRegistry;
     }
 
     @Override
     protected void doExecute(Task task, ActionRequest request, ActionListener<DeleteResponse> actionListener) {
         MLModelDeleteRequest mlModelDeleteRequest = MLModelDeleteRequest.fromActionRequest(request);
         String modelId = mlModelDeleteRequest.getModelId();
+        MLModelGetRequest mlModelGetRequest = new MLModelGetRequest(modelId, true);
+        FetchSourceContext fetchSourceContext = getFetchSourceContext(mlModelGetRequest.isReturnContent());
+        GetRequest getRequest = new GetRequest(ML_MODEL_INDEX).id(modelId).fetchSourceContext(fetchSourceContext);
 
+        try (ThreadContext.StoredContext context = client.threadPool().getThreadContext().stashContext()) {
+            client.get(getRequest, ActionListener.runBefore(ActionListener.wrap(r -> {
+                log.debug("Completed Get Model Request, id:{}", modelId);
+
+                if (r != null && r.isExists()) {
+                    try (XContentParser parser = createXContentParserFromRegistry(xContentRegistry, r.getSourceAsBytesRef())) {
+                        ensureExpectedToken(XContentParser.Token.START_OBJECT, parser.nextToken(), parser);
+                        MLModel mlModel = MLModel.parse(parser);
+                        MLModelState mlModelState = mlModel.getModelState();
+                        if (mlModelState.equals(MLModelState.LOADED) || mlModelState.equals(MLModelState.LOADING)
+                                || mlModel.equals(MLModelState.UPLOADING) || mlModel.equals(MLModelState.PARTIALLY_LOADED)) {
+                            actionListener.onFailure(new Exception("Model cannot be deleted in loading or loaded state"));
+                        } else {
+                            DeleteRequest deleteRequest = new DeleteRequest(ML_MODEL_INDEX, modelId);
+                            client.delete(deleteRequest, new ActionListener<DeleteResponse>() {
+                                @Override
+                                public void onResponse(DeleteResponse deleteResponse) {
+                                    deleteModelChunks(modelId, deleteResponse, actionListener);
+                                }
+
+                                @Override
+                                public void onFailure(Exception e) {
+                                    log.error("Failed to delete model meta data for model: " + modelId, e);
+                                    if (e instanceof ResourceNotFoundException) {
+                                        deleteModelChunks(modelId, null, actionListener);
+                                    }
+                                    actionListener.onFailure(e);
+                                }
+                            });
+                        }
+                    } catch (Exception e) {
+                        log.error("Failed to parse ml model" + r.getId(), e);
+                        actionListener.onFailure(e);
+                    }
+                } else {
+                    actionListener.onFailure(new MLResourceNotFoundException("Fail to find model"));
+                }
+            }, e -> {
+                actionListener.onFailure(new MLResourceNotFoundException("Fail to find model"));
+            }), () -> context.restore()));
+        } catch (Exception e) {
+            log.error("Failed to delete ML model " + modelId, e);
+            actionListener.onFailure(e);
+        }
+    }
+
+    private void deleteModel(String modelId, ActionListener<DeleteResponse> actionListener) {
         DeleteRequest deleteRequest = new DeleteRequest(ML_MODEL_INDEX, modelId);
-
         try (ThreadContext.StoredContext context = client.threadPool().getThreadContext().stashContext()) {
             client.delete(deleteRequest, new ActionListener<DeleteResponse>() {
                 @Override
@@ -79,7 +142,6 @@ public class DeleteModelTransportAction extends HandledTransportAction<ActionReq
             actionListener.onFailure(e);
         }
     }
-
     @VisibleForTesting
     void deleteModelChunks(String modelId, DeleteResponse deleteResponse, ActionListener<DeleteResponse> actionListener) {
         DeleteByQueryRequest deleteModelsRequest = new DeleteByQueryRequest(ML_MODEL_INDEX);
@@ -87,7 +149,7 @@ public class DeleteModelTransportAction extends HandledTransportAction<ActionReq
 
         client.execute(DeleteByQueryAction.INSTANCE, deleteModelsRequest, ActionListener.wrap(r -> {
             if ((r.getBulkFailures() == null || r.getBulkFailures().size() == 0)
-                && (r.getSearchFailures() == null || r.getSearchFailures().size() == 0)) {
+                    && (r.getSearchFailures() == null || r.getSearchFailures().size() == 0)) {
                 log.debug("All model chunks are deleted for model {}", modelId);
                 if (deleteResponse != null) {
                     // If model metaData not found and deleteResponse is null, do not return here.

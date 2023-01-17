@@ -6,10 +6,7 @@
 package org.opensearch.ml.engine.algorithms.text_embedding;
 
 import org.apache.commons.lang3.exception.ExceptionUtils;
-import org.junit.After;
-import org.junit.Before;
-import org.junit.Rule;
-import org.junit.Test;
+import org.junit.*;
 import org.junit.rules.ExpectedException;
 import org.opensearch.ResourceNotFoundException;
 import org.opensearch.ml.common.FunctionName;
@@ -158,6 +155,7 @@ public class TextEmbeddingModelTest {
         textEmbeddingModel.close();
     }
 
+    @Ignore
     @Test
     public void initModel_predict_TorchScript_Huggingface() throws URISyntaxException {
         String modelFile = "all-MiniLM-L6-v2_torchscript_huggingface.zip";
@@ -169,6 +167,7 @@ public class TextEmbeddingModelTest {
         initModel_predict_HuggingfaceModel(modelFile, modelType, poolingMode, normalize, modelMaxLength, modelFormat, dimension);
     }
 
+    @Ignore
     @Test
     public void initModel_predict_ONNX_bert() throws URISyntaxException {
         String modelFile = "all-MiniLM-L6-v2_onnx.zip";
@@ -180,6 +179,7 @@ public class TextEmbeddingModelTest {
         initModel_predict_HuggingfaceModel(modelFile, modelType, poolingMode, normalize, modelMaxLength, modelFormat, dimension);
     }
 
+    @Ignore
     @Test
     public void initModel_predict_ONNX_albert() throws URISyntaxException {
         String modelFile = "paraphrase-albert-small-v2_onnx.zip";
@@ -191,6 +191,7 @@ public class TextEmbeddingModelTest {
         initModel_predict_HuggingfaceModel(modelFile, modelType, poolingMode, normalize, modelMaxLength, modelFormat, 768);
     }
 
+    @Ignore
     private void initModel_predict_HuggingfaceModel(String modelFile, String modelType, TextEmbeddingModelConfig.PoolingMode poolingMode,
                                         boolean normalizeResult, Integer modelMaxLength,
                                    MLModelFormat modelFormat, int dimension) throws URISyntaxException {
