@@ -233,7 +233,7 @@ public class MLSyncUpCron implements Runnable {
                         indexRequest.setRefreshPolicy(WriteRequest.RefreshPolicy.IMMEDIATE);
                         client.index(indexRequest, ActionListener.wrap(indexResponse -> {
                             log.info("ML configuration initialized successfully");
-                            encryptor.setMasterKey(masterKey);
+//                            encryptor.setMasterKey(masterKey);
                             mlConfigInited = true;
                         }, e -> { log.debug("Failed to save ML encryption master key", e); }));
                     } else {

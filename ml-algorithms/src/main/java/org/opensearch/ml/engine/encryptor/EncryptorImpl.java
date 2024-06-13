@@ -33,6 +33,7 @@ import com.amazonaws.encryptionsdk.CryptoResult;
 import com.amazonaws.encryptionsdk.jce.JceMasterKey;
 
 import lombok.extern.log4j.Log4j2;
+import org.opensearch.ml.common.transport.register.MLRegisterModelResponse;
 
 @Log4j2
 public class EncryptorImpl implements Encryptor {
@@ -64,29 +65,76 @@ public class EncryptorImpl implements Encryptor {
     }
 
     @Override
-    public String encrypt(String plainText) {
-        initMasterKey();
-        final AwsCrypto crypto = AwsCrypto.builder().withCommitmentPolicy(CommitmentPolicy.RequireEncryptRequireDecrypt).build();
-        byte[] bytes = Base64.getDecoder().decode(masterKey);
-        // https://github.com/aws/aws-encryption-sdk-java/issues/1879
-        JceMasterKey jceMasterKey = JceMasterKey.getInstance(new SecretKeySpec(bytes, "AES"), "Custom", "", "AES/GCM/NOPADDING");
+    public void encrypt(String plainText, ActionListener<String> listener) {
+        initMasterKey(new ActionListener<>() {
+            @Override
+            public void onResponse(Void unused) {
+                try {
+                    final AwsCrypto crypto = AwsCrypto.builder()
+                        .withCommitmentPolicy(CommitmentPolicy.RequireEncryptRequireDecrypt)
+                        .build();
+                    byte[] bytes = Base64.getDecoder().decode(masterKey);
+                    JceMasterKey jceMasterKey = JceMasterKey.getInstance(
+                        new SecretKeySpec(bytes, "AES"), "Custom", "", "AES/GCM/NOPADDING");
 
-        final CryptoResult<byte[], JceMasterKey> encryptResult = crypto
-            .encryptData(jceMasterKey, plainText.getBytes(StandardCharsets.UTF_8));
-        return Base64.getEncoder().encodeToString(encryptResult.getResult());
+                    final CryptoResult<byte[], JceMasterKey> encryptResult = crypto
+                        .encryptData(jceMasterKey, plainText.getBytes(StandardCharsets.UTF_8));
+                    listener.onResponse(Base64.getEncoder().encodeToString(encryptResult.getResult()));
+                } catch (Exception e) {
+                    listener.onFailure(e);
+                }
+            }
+
+            @Override
+            public void onFailure(Exception e) {
+                listener.onFailure(e);
+            }
+        });
+//        initMasterKey();
+//        final AwsCrypto crypto = AwsCrypto.builder().withCommitmentPolicy(CommitmentPolicy.RequireEncryptRequireDecrypt).build();
+//        byte[] bytes = Base64.getDecoder().decode(masterKey);
+//        // https://github.com/aws/aws-encryption-sdk-java/issues/1879
+//        JceMasterKey jceMasterKey = JceMasterKey.getInstance(new SecretKeySpec(bytes, "AES"), "Custom", "", "AES/GCM/NOPADDING");
+//
+//        final CryptoResult<byte[], JceMasterKey> encryptResult = crypto
+//            .encryptData(jceMasterKey, plainText.getBytes(StandardCharsets.UTF_8));
+//        return Base64.getEncoder().encodeToString(encryptResult.getResult());
     }
 
     @Override
-    public String decrypt(String encryptedText) {
-        initMasterKey();
-        final AwsCrypto crypto = AwsCrypto.builder().withCommitmentPolicy(CommitmentPolicy.RequireEncryptRequireDecrypt).build();
+    public void decrypt(String encryptedText, ActionListener<String> listener) {
+        initMasterKey(new ActionListener<>() {
+            @Override
+            public void onResponse(Void unused) {
+                try {
+                    final AwsCrypto crypto = AwsCrypto.builder().withCommitmentPolicy(CommitmentPolicy.RequireEncryptRequireDecrypt).build();
 
-        byte[] bytes = Base64.getDecoder().decode(masterKey);
-        JceMasterKey jceMasterKey = JceMasterKey.getInstance(new SecretKeySpec(bytes, "AES"), "Custom", "", "AES/GCM/NOPADDING");
+                    byte[] bytes = Base64.getDecoder().decode(masterKey);
+                    JceMasterKey jceMasterKey = JceMasterKey.getInstance(new SecretKeySpec(bytes, "AES"), "Custom", "", "AES/GCM/NOPADDING");
 
-        final CryptoResult<byte[], JceMasterKey> decryptedResult = crypto
-            .decryptData(jceMasterKey, Base64.getDecoder().decode(encryptedText));
-        return new String(decryptedResult.getResult());
+                    final CryptoResult<byte[], JceMasterKey> decryptedResult = crypto
+                        .decryptData(jceMasterKey, Base64.getDecoder().decode(encryptedText));
+                    listener.onResponse(new String(decryptedResult.getResult()));
+                } catch (Exception e) {
+                    listener.onFailure(e);
+                }
+            }
+
+            @Override
+            public void onFailure(Exception e) {
+                listener.onFailure(e);
+            }
+        });
+
+//        initMasterKey(listener);
+//        final AwsCrypto crypto = AwsCrypto.builder().withCommitmentPolicy(CommitmentPolicy.RequireEncryptRequireDecrypt).build();
+//
+//        byte[] bytes = Base64.getDecoder().decode(masterKey);
+//        JceMasterKey jceMasterKey = JceMasterKey.getInstance(new SecretKeySpec(bytes, "AES"), "Custom", "", "AES/GCM/NOPADDING");
+//
+//        final CryptoResult<byte[], JceMasterKey> decryptedResult = crypto
+//            .decryptData(jceMasterKey, Base64.getDecoder().decode(encryptedText));
+//        return new String(decryptedResult.getResult());
     }
 
     @Override
@@ -97,49 +145,54 @@ public class EncryptorImpl implements Encryptor {
         return base64Key;
     }
 
-    private void initMasterKey() {
+    private void initMasterKey(ActionListener<Void> listener) {
         if (masterKey != null) {
+            listener.onResponse(null);
             return;
         }
-        AtomicReference<Exception> exceptionRef = new AtomicReference<>();
+//        AtomicReference<Exception> exceptionRef = new AtomicReference<>();
+        Boolean mlConfig = clusterService.state().metadata().hasIndex(ML_CONFIG_INDEX);
 
-        CountDownLatch latch = new CountDownLatch(1);
+//        CountDownLatch latch = new CountDownLatch(1);
         if (clusterService.state().metadata().hasIndex(ML_CONFIG_INDEX)) {
             try (ThreadContext.StoredContext context = client.threadPool().getThreadContext().stashContext()) {
                 GetRequest getRequest = new GetRequest(ML_CONFIG_INDEX).id(MASTER_KEY);
-                client.get(getRequest, ActionListener.runBefore(new LatchedActionListener(ActionListener.<GetResponse>wrap(r -> {
-                    if (r.isExists()) {
-                        String masterKey = (String) r.getSourceAsMap().get(MASTER_KEY);
-                        this.masterKey = masterKey;
+                client.get(getRequest, ActionListener.wrap(response -> {
+                    if (response.isExists()) {
+                        String retrievedMasterKey = (String) response.getSourceAsMap().get(MASTER_KEY);
+                        this.masterKey = retrievedMasterKey;
+                        listener.onResponse(null);
                     } else {
-                        exceptionRef.set(new ResourceNotFoundException(MASTER_KEY_NOT_READY_ERROR));
+                        listener.onFailure(new ResourceNotFoundException(MASTER_KEY_NOT_READY_ERROR));
                     }
                 }, e -> {
                     log.error("Failed to get ML encryption master key", e);
-                    exceptionRef.set(e);
-                }), latch), () -> context.restore()));
+                    listener.onFailure(e);
+                }));
+            } catch (Exception e) {
+                log.error("Failed to get encryption master key", e);
+                listener.onFailure(e);
             }
         } else {
-            exceptionRef.set(new ResourceNotFoundException(MASTER_KEY_NOT_READY_ERROR));
-            latch.countDown();
+            listener.onFailure(new ResourceNotFoundException(MASTER_KEY_NOT_READY_ERROR));
         }
 
-        try {
-            latch.await(5, SECONDS);
-        } catch (InterruptedException e) {
-            throw new IllegalStateException(e);
-        }
+//        try {
+//            latch.await(5, SECONDS);
+//        } catch (InterruptedException e) {
+//            throw new IllegalStateException(e);
+//        }
 
-        if (exceptionRef.get() != null) {
-            log.debug("Failed to init master key", exceptionRef.get());
-            if (exceptionRef.get() instanceof RuntimeException) {
-                throw (RuntimeException) exceptionRef.get();
-            } else {
-                throw new MLException(exceptionRef.get());
-            }
-        }
-        if (masterKey == null) {
-            throw new ResourceNotFoundException(MASTER_KEY_NOT_READY_ERROR);
-        }
+//        if (exceptionRef.get() != null) {
+//            log.debug("Failed to init master key", exceptionRef.get());
+//            if (exceptionRef.get() instanceof RuntimeException) {
+//                throw (RuntimeException) exceptionRef.get();
+//            } else {
+//                throw new MLException(exceptionRef.get());
+//            }
+//        }
+//        if (masterKey == null) {
+//            throw new ResourceNotFoundException(MASTER_KEY_NOT_READY_ERROR);
+//        }
     }
 }
