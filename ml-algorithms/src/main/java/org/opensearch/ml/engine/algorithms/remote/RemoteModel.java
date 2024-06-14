@@ -117,7 +117,7 @@ public class RemoteModel implements Predictable {
                     log.error("Failed to decrypt connector credentials.", e);
                 }
             };
-            connector.decrypt(PREDICT.name(), (credential, listener) -> encryptor.decrypt(credential, decryptListener), decryptListener);
+            connector.decrypt(PREDICT.name(), (credential, listener) -> encryptor.decrypt(credential, listener), decryptListener);
 //            connector.decrypt(PREDICT.name(), (credential) -> encryptor.decrypt(credential));
 //            this.connectorExecutor = MLEngineClassLoader.initInstance(connector.getProtocol(), connector, Connector.class);
 //            this.connectorExecutor.setScriptService((ScriptService) params.get(SCRIPT_SERVICE));

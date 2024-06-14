@@ -197,8 +197,8 @@ public class MLEngine {
         }
     }
 
-    public void encrypt(String credential, ActionListener<String> listener) {
-        encryptor.encrypt(credential, listener);
+    public void encrypt(Map<String, String> credentials, ActionListener<Map<String, String>> listener) {
+        encryptor.encrypt(credentials, listener);
     }
 
 }

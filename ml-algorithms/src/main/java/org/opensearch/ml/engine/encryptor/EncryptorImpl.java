@@ -14,6 +14,8 @@ import java.nio.charset.StandardCharsets;
 import java.security.SecureRandom;
 import java.time.Instant;
 import java.util.Base64;
+import java.util.HashMap;
+import java.util.Map;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.atomic.AtomicReference;
 
@@ -75,7 +77,7 @@ public class EncryptorImpl implements Encryptor {
     }
 
     @Override
-    public void encrypt(String plainText, ActionListener<String> listener) {
+    public void encrypt(Map<String, String> credentials, ActionListener<Map<String, String>> listener) {
         initMasterKey(new ActionListener<>() {
             @Override
             public void onResponse(Boolean isMasterKeyInitialized) {
@@ -87,9 +89,21 @@ public class EncryptorImpl implements Encryptor {
                     JceMasterKey jceMasterKey = JceMasterKey.getInstance(
                         new SecretKeySpec(bytes, "AES"), "Custom", "", "AES/GCM/NOPADDING");
 
-                    final CryptoResult<byte[], JceMasterKey> encryptResult = crypto
-                        .encryptData(jceMasterKey, plainText.getBytes(StandardCharsets.UTF_8));
-                    listener.onResponse(Base64.getEncoder().encodeToString(encryptResult.getResult()));
+                    Map<String, String> encryptedCredentials = new HashMap<>();
+
+                    for (String key : credentials.keySet()) {
+                        String plainText = credentials.get(key);
+                        final CryptoResult<byte[], JceMasterKey> cryptoResult = crypto
+                            .encryptData(jceMasterKey, plainText.getBytes(StandardCharsets.UTF_8));
+                        String encryptResult = Base64.getEncoder().encodeToString(cryptoResult.getResult());
+                        encryptedCredentials.put(key, encryptResult);
+                    }
+
+                    if (credentials.size() == encryptedCredentials.size()) {
+                        listener.onResponse(encryptedCredentials);
+                    } else {
+                        listener.onFailure(new MLException("Unable to encrypt all keys in the credential"));
+                    }
                 } catch (Exception e) {
                     listener.onFailure(e);
                 }
@@ -100,19 +114,10 @@ public class EncryptorImpl implements Encryptor {
                 listener.onFailure(e);
             }
         });
-//        initMasterKey();
-//        final AwsCrypto crypto = AwsCrypto.builder().withCommitmentPolicy(CommitmentPolicy.RequireEncryptRequireDecrypt).build();
-//        byte[] bytes = Base64.getDecoder().decode(masterKey);
-//        // https://github.com/aws/aws-encryption-sdk-java/issues/1879
-//        JceMasterKey jceMasterKey = JceMasterKey.getInstance(new SecretKeySpec(bytes, "AES"), "Custom", "", "AES/GCM/NOPADDING");
-//
-//        final CryptoResult<byte[], JceMasterKey> encryptResult = crypto
-//            .encryptData(jceMasterKey, plainText.getBytes(StandardCharsets.UTF_8));
-//        return Base64.getEncoder().encodeToString(encryptResult.getResult());
     }
 
     @Override
-    public void decrypt(String encryptedText, ActionListener<String> listener) {
+    public void decrypt(Map<String, String> encryptedCredentials, ActionListener<Map<String, String>> listener) {
         initMasterKey(new ActionListener<>() {
             @Override
             public void onResponse(Boolean isMasterKeyInitialized) {
@@ -122,9 +127,20 @@ public class EncryptorImpl implements Encryptor {
                     byte[] bytes = Base64.getDecoder().decode(masterKey);
                     JceMasterKey jceMasterKey = JceMasterKey.getInstance(new SecretKeySpec(bytes, "AES"), "Custom", "", "AES/GCM/NOPADDING");
 
-                    final CryptoResult<byte[], JceMasterKey> decryptedResult = crypto
-                        .decryptData(jceMasterKey, Base64.getDecoder().decode(encryptedText));
-                    listener.onResponse(new String(decryptedResult.getResult()));
+                    Map<String, String> decryptedCredentials = new HashMap<>();
+
+                    for (String key : encryptedCredentials.keySet()) {
+                        String encryptedText = encryptedCredentials.get(key);
+                        final CryptoResult<byte[], JceMasterKey> cryptoResult = crypto
+                            .decryptData(jceMasterKey, Base64.getDecoder().decode(encryptedText));
+                        String decryptedResult = Base64.getEncoder().encodeToString(cryptoResult.getResult());
+                        decryptedCredentials.put(key, decryptedResult);
+                    }
+                    if (encryptedCredentials.size() == decryptedCredentials.size()) {
+                        listener.onResponse(decryptedCredentials);
+                    } else {
+                        listener.onFailure(new MLException("Unable to decrypt all keys in the credential"));
+                    }
                 } catch (Exception e) {
                     listener.onFailure(e);
                 }
@@ -135,16 +151,6 @@ public class EncryptorImpl implements Encryptor {
                 listener.onFailure(e);
             }
         });
-
-//        initMasterKey(listener);
-//        final AwsCrypto crypto = AwsCrypto.builder().withCommitmentPolicy(CommitmentPolicy.RequireEncryptRequireDecrypt).build();
-//
-//        byte[] bytes = Base64.getDecoder().decode(masterKey);
-//        JceMasterKey jceMasterKey = JceMasterKey.getInstance(new SecretKeySpec(bytes, "AES"), "Custom", "", "AES/GCM/NOPADDING");
-//
-//        final CryptoResult<byte[], JceMasterKey> decryptedResult = crypto
-//            .decryptData(jceMasterKey, Base64.getDecoder().decode(encryptedText));
-//        return new String(decryptedResult.getResult());
     }
 
     @Override
@@ -165,7 +171,7 @@ public class EncryptorImpl implements Encryptor {
             GetRequest getRequest = new GetRequest(ML_CONFIG_INDEX).id(MASTER_KEY);
             try (ThreadContext.StoredContext context = client.threadPool().getThreadContext().stashContext()) {
                 client.get(getRequest, ActionListener.wrap(getResponse -> {
-                    if (!getResponse.isExists()) {
+                    if (getResponse == null || !getResponse.isExists()) {
                         IndexRequest indexRequest = new IndexRequest(ML_CONFIG_INDEX).id(MASTER_KEY);
                         final String generatedMasterKey = generateMasterKey();
                         indexRequest.source(ImmutableMap.of(MASTER_KEY, generatedMasterKey, CREATE_TIME_FIELD, Instant.now().toEpochMilli()));
@@ -193,8 +199,8 @@ public class EncryptorImpl implements Encryptor {
                                     }));
                                 }
                             } else {
-                                log.debug("Failed to save ML encryption master key", e);
-                                listener.onFailure(new ResourceNotFoundException(MASTER_KEY_NOT_READY_ERROR));
+                                log.debug("Failed to index ML encryption master key", e);
+                                listener.onFailure(e);
                            }
                         }));
                     } else {

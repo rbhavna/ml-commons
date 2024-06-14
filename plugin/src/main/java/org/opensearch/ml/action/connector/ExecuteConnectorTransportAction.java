@@ -33,6 +33,8 @@ import org.opensearch.transport.TransportService;
 
 import lombok.extern.log4j.Log4j2;
 
+import java.util.Map;
+
 @Log4j2
 public class ExecuteConnectorTransportAction extends HandledTransportAction<ActionRequest, MLTaskResponse> {
 
@@ -94,7 +96,7 @@ public class ExecuteConnectorTransportAction extends HandledTransportAction<Acti
                         }
                     };
 
-                    connector.decrypt(connectorAction, (credential, connectorListener) -> encryptor.decrypt(credential, decryptListener), decryptListener);
+                    connector.decrypt(connectorAction, (credentials, connectorListener) -> encryptor.decrypt(credentials, connectorListener), decryptListener);
                 }}, e -> {
                 log.error("Failed to get connector " + connectorId, e);
                 actionListener.onFailure(e);

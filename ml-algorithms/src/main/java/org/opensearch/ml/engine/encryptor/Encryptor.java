@@ -7,15 +7,17 @@ package org.opensearch.ml.engine.encryptor;
 
 import org.opensearch.core.action.ActionListener;
 
+import java.util.Map;
+
 public interface Encryptor {
 
     /**
      * Takes plaintext and returns encrypted text.
      *
-     * @param plainText plainText.
+     * @param credentials plainText.
      * @return String encryptedText.
      */
-    void encrypt(String plainText, ActionListener<String> listener);
+    void encrypt(Map<String, String> credentials, ActionListener<Map<String, String>> listener);
 
     /**
      * Takes encryptedText and returns plain text.
@@ -23,7 +25,7 @@ public interface Encryptor {
      * @param encryptedText encryptedText.
      * @return String plainText.
      */
-    void decrypt(String encryptedText, ActionListener<String> listener);
+    void decrypt(Map<String, String> credentials, ActionListener<Map<String, String>> listener);
 
     /**
      * Set up the masterKey for dynamic updating

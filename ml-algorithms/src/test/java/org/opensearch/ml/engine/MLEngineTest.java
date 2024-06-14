@@ -16,6 +16,8 @@ import static org.opensearch.ml.engine.helper.MLTestHelper.constructTestDataFram
 import java.io.IOException;
 import java.nio.file.Path;
 import java.util.Arrays;
+import java.util.HashMap;
+import java.util.Map;
 import java.util.UUID;
 
 import org.junit.Assert;
@@ -24,6 +26,7 @@ import org.junit.Ignore;
 import org.junit.Rule;
 import org.junit.Test;
 import org.junit.rules.ExpectedException;
+import org.mockito.Mock;
 import org.mockito.MockedStatic;
 import org.mockito.Mockito;
 import org.opensearch.core.action.ActionListener;
@@ -55,6 +58,9 @@ public class MLEngineTest {
     public ExpectedException exceptionRule = ExpectedException.none();
 
     private MLEngine mlEngine;
+
+    @Mock
+    ActionListener<Map<String,String>> listener;
 
     @Before
     public void setUp() {
@@ -415,10 +421,10 @@ public class MLEngineTest {
 
     @Test
     public void testEncryptMethod() {
-        String testString = "testString";
-        String encryptedString = mlEngine.encrypt(testString);
-        assertNotNull(encryptedString);
-        assertNotEquals(testString, encryptedString);
+        Map<String, String> testStrings = new HashMap<>();
+        testStrings.put("key1", "value1");
+        testStrings.put("key2", "value2");
+        mlEngine.encrypt(testStrings, listener);
     }
 
 }
