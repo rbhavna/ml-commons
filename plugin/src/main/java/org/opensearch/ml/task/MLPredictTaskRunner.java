@@ -8,17 +8,29 @@ package org.opensearch.ml.task;
 import static org.opensearch.core.xcontent.XContentParserUtils.ensureExpectedToken;
 import static org.opensearch.ml.common.CommonValue.ML_MODEL_INDEX;
 import static org.opensearch.ml.common.MLModel.ALGORITHM_FIELD;
+import static org.opensearch.ml.common.MLTask.MODEL_ID_FIELD;
+import static org.opensearch.ml.common.MLTask.STATE_FIELD;
+import static org.opensearch.ml.common.MLTask.TASK_ID_FIELD;
+import static org.opensearch.ml.common.MLTask.TRANSFORM_JOB_FIELD;
+import static org.opensearch.ml.common.MLTaskState.COMPLETED;
+import static org.opensearch.ml.common.MLTaskState.CREATED;
+import static org.opensearch.ml.common.MLTaskState.FAILED;
 import static org.opensearch.ml.common.utils.StringUtils.getErrorMessage;
 import static org.opensearch.ml.permission.AccessController.checkUserPermissions;
 import static org.opensearch.ml.permission.AccessController.getUserContext;
 import static org.opensearch.ml.plugin.MachineLearningPlugin.PREDICT_THREAD_POOL;
 import static org.opensearch.ml.plugin.MachineLearningPlugin.REMOTE_PREDICT_THREAD_POOL;
 import static org.opensearch.ml.settings.MLCommonsSettings.ML_COMMONS_MODEL_AUTO_DEPLOY_ENABLE;
+import static org.opensearch.ml.utils.MLExceptionUtils.logException;
 
 import java.time.Instant;
 import java.util.Arrays;
+import java.util.HashMap;
+import java.util.Map;
 import java.util.UUID;
 
+import org.apache.commons.lang3.RandomStringUtils;
+import org.apache.commons.lang3.StringUtils;
 import org.opensearch.OpenSearchException;
 import org.opensearch.OpenSearchStatusException;
 import org.opensearch.ResourceNotFoundException;
@@ -48,13 +60,16 @@ import org.opensearch.ml.common.MLTask;
 import org.opensearch.ml.common.MLTaskState;
 import org.opensearch.ml.common.MLTaskType;
 import org.opensearch.ml.common.connector.ConnectorAction;
+import org.opensearch.ml.common.PredictMode;
 import org.opensearch.ml.common.dataset.MLInputDataType;
 import org.opensearch.ml.common.dataset.MLInputDataset;
 import org.opensearch.ml.common.dataset.remote.RemoteInferenceInputDataSet;
 import org.opensearch.ml.common.input.MLInput;
 import org.opensearch.ml.common.output.MLOutput;
 import org.opensearch.ml.common.output.MLPredictionOutput;
+import org.opensearch.ml.common.output.model.ModelTensor;
 import org.opensearch.ml.common.output.model.ModelTensorOutput;
+import org.opensearch.ml.common.output.model.ModelTensors;
 import org.opensearch.ml.common.transport.MLTaskResponse;
 import org.opensearch.ml.common.transport.deploy.MLDeployModelAction;
 import org.opensearch.ml.common.transport.deploy.MLDeployModelRequest;
@@ -68,6 +83,7 @@ import org.opensearch.ml.stats.ActionName;
 import org.opensearch.ml.stats.MLActionLevelStat;
 import org.opensearch.ml.stats.MLNodeLevelStat;
 import org.opensearch.ml.stats.MLStats;
+import org.opensearch.ml.utils.MLExceptionUtils;
 import org.opensearch.ml.utils.MLNodeUtils;
 import org.opensearch.threadpool.ThreadPool;
 import org.opensearch.transport.TransportResponseHandler;
@@ -228,11 +244,18 @@ public class MLPredictTaskRunner extends MLTaskRunner<MLPredictionTaskRequest, M
         Instant now = Instant.now();
         String modelId = request.getModelId();
         FunctionName functionName = request.getMlInput().getFunctionName();
+
+        MLInput mlInput = request.getMlInput();
+        ActionType actionType = null;
+        if (mlInput.getInputDataset() instanceof RemoteInferenceInputDataSet) {
+            actionType = ((RemoteInferenceInputDataSet) mlInput.getInputDataset()).getActionType();
+        }
+        actionType = actionType == null ? ActionType.PREDICT : actionType;
         MLTask mlTask = MLTask
             .builder()
             .taskId(UUID.randomUUID().toString())
             .modelId(modelId)
-            .taskType(MLTaskType.PREDICTION)
+            .taskType(actionType.equals(ActionType.BATCH_PREDICT) ? MLTaskType.BATCH_PREDICTION : MLTaskType.PREDICTION)
             .inputType(inputDataType)
             .functionName(functionName)
             .state(MLTaskState.CREATED)
@@ -241,7 +264,6 @@ public class MLPredictTaskRunner extends MLTaskRunner<MLPredictionTaskRequest, M
             .lastUpdateTime(now)
             .async(false)
             .build();
-        MLInput mlInput = request.getMlInput();
         switch (inputDataType) {
             case SEARCH_QUERY:
                 ActionListener<MLInputDataset> dataFrameActionListener = ActionListener.wrap(dataSet -> {
@@ -336,13 +358,61 @@ public class MLPredictTaskRunner extends MLTaskRunner<MLPredictionTaskRequest, M
                     if (mlInput.getAlgorithm() == FunctionName.REMOTE) {
                         long startTime = System.nanoTime();
                         ActionListener<MLTaskResponse> trackPredictDurationListener = ActionListener.wrap(output -> {
+
                             if (output.getOutput() instanceof ModelTensorOutput) {
                                 validateOutputSchema(modelId, (ModelTensorOutput) output.getOutput());
                             }
-                            handleAsyncMLTaskComplete(mlTask);
-                            mlModelManager.trackPredictDuration(modelId, startTime);
-                            internalListener.onResponse(output);
-                        }, e -> handlePredictFailure(mlTask, internalListener, e, false, modelId, actionName));
+                            if (mlTask.getTaskType().equals(MLTaskType.BATCH_PREDICTION)) {
+                                Map<String, Object> transformJob = new HashMap<>();
+                                ModelTensorOutput tensorOutput = (ModelTensorOutput) output.getOutput();
+                                if (tensorOutput != null
+                                    && tensorOutput.getMlModelOutputs() != null
+                                    && !tensorOutput.getMlModelOutputs().isEmpty()) {
+                                    ModelTensors modelOutput = tensorOutput.getMlModelOutputs().get(0);
+                                    if (modelOutput.getMlModelTensors() != null && !modelOutput.getMlModelTensors().isEmpty()) {
+                                        Map<String, Object> dataAsMap = (Map<String, Object>) modelOutput
+                                            .getMlModelTensors()
+                                            .get(0)
+                                            .getDataAsMap();
+                                        if (dataAsMap != null
+                                            && (dataAsMap.containsKey("TransformJobArn") || dataAsMap.containsKey("id"))) {
+                                            transformJob.putAll(dataAsMap);
+                                            mlTask.setTransformJob(transformJob);
+                                            mlTask.setTaskId(null);
+                                            mlTaskManager.createMLTask(mlTask, ActionListener.wrap(response -> {
+                                                String taskId = response.getId();
+                                                mlTask.setTaskId(taskId);
+                                                MLPredictionOutput outputBuilder = MLPredictionOutput
+                                                    .builder()
+                                                    .taskId(taskId)
+                                                    .status(MLTaskState.CREATED.name())
+                                                    .build();
+
+                                                MLTaskResponse predictOutput = MLTaskResponse.builder().output(outputBuilder).build();
+                                                internalListener.onResponse(predictOutput);
+                                            }, e -> {
+                                                logException("Failed to create task for batch predict model", e, log);
+                                                internalListener.onFailure(e);
+                                            }));
+                                        } else {
+                                            log.debug("Batch transform job output from remote model did not return the job ID");
+                                            internalListener
+                                                .onFailure(new ResourceNotFoundException("Unable to create batch transform job"));
+                                        }
+                                    } else {
+                                        log.debug("ML Model Tensors are null or empty.");
+                                        internalListener.onFailure(new ResourceNotFoundException("Unable to create batch transform job"));
+                                    }
+                                } else {
+                                    log.debug("ML Model Outputs are null or empty.");
+                                    internalListener.onFailure(new ResourceNotFoundException("Unable to create batch transform job"));
+                                }
+                            } else {
+                                handleAsyncMLTaskComplete(mlTask);
+                                mlModelManager.trackPredictDuration(modelId, startTime);
+                                internalListener.onResponse(output);
+                            }
+                        }, e -> handlePredictFailure(mlTask, internalListener, e, false, modelId));
                         predictor.asyncPredict(mlInput, trackPredictDurationListener);
                     } else {
                         MLOutput output = mlModelManager.trackPredictDuration(modelId, () -> predictor.predict(mlInput));
