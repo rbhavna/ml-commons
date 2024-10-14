@@ -15,12 +15,17 @@ import static org.opensearch.ml.plugin.MachineLearningPlugin.PREDICT_THREAD_POOL
 import static org.opensearch.ml.plugin.MachineLearningPlugin.REMOTE_PREDICT_THREAD_POOL;
 import static org.opensearch.ml.settings.MLCommonsSettings.ML_COMMONS_MODEL_AUTO_DEPLOY_ENABLE;
 import static org.opensearch.ml.utils.MLExceptionUtils.logException;
+import static org.opensearch.ml.utils.RestActionUtils.getAllNodes;
 
 import java.time.Instant;
 import java.util.Arrays;
 import java.util.HashMap;
+import java.util.HashSet;
+import java.util.List;
 import java.util.Map;
+import java.util.Set;
 import java.util.UUID;
+import java.util.stream.Collectors;
 
 import org.opensearch.OpenSearchException;
 import org.opensearch.OpenSearchStatusException;
@@ -158,6 +163,15 @@ public class MLPredictTaskRunner extends MLTaskRunner<MLPredictionTaskRequest, M
                 }
             }, listener::onFailure);
             String[] workerNodes = mlModelManager.getWorkerNodes(modelId, functionName, true);
+
+            if (workerNodes != null && workerNodes.length > 0) {
+                String[] allNodesInCluster = getAllNodes(clusterService);
+
+                workerNodes = Arrays.stream(workerNodes)
+                    .filter(node -> Arrays.asList(allNodesInCluster).contains(node))
+                    .toArray(String[]::new);
+            }
+
             if (workerNodes == null || workerNodes.length == 0) {
                 if (FunctionName.isAutoDeployEnabled(autoDeploymentEnabled, functionName)) {
                     try (ThreadContext.StoredContext context = client.threadPool().getThreadContext().stashContext()) {
