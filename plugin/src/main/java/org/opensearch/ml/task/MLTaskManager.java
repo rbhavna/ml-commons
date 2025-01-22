@@ -6,6 +6,7 @@
 package org.opensearch.ml.task;
 
 import static org.opensearch.ml.common.CommonValue.ML_TASK_INDEX;
+import static org.opensearch.ml.common.CommonValue.TASK_POLLING_JOB_INDEX;
 import static org.opensearch.ml.common.MLTask.LAST_UPDATE_TIME_FIELD;
 import static org.opensearch.ml.common.MLTask.STATE_FIELD;
 import static org.opensearch.ml.common.MLTask.TASK_TYPE_FIELD;
@@ -14,7 +15,9 @@ import static org.opensearch.ml.common.MLTaskState.RUNNING;
 import static org.opensearch.ml.plugin.MachineLearningPlugin.GENERAL_THREAD_POOL;
 import static org.opensearch.ml.utils.MLExceptionUtils.logException;
 
+import java.io.IOException;
 import java.time.Instant;
+import java.time.temporal.ChronoUnit;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.HashMap;
@@ -37,6 +40,7 @@ import org.opensearch.client.Client;
 import org.opensearch.client.Requests;
 import org.opensearch.common.util.concurrent.ThreadContext;
 import org.opensearch.common.xcontent.XContentFactory;
+import org.opensearch.common.xcontent.json.JsonXContent;
 import org.opensearch.core.action.ActionListener;
 import org.opensearch.core.common.Strings;
 import org.opensearch.core.rest.RestStatus;
@@ -44,6 +48,7 @@ import org.opensearch.core.xcontent.ToXContent;
 import org.opensearch.core.xcontent.XContentBuilder;
 import org.opensearch.index.query.BoolQueryBuilder;
 import org.opensearch.index.query.QueryBuilders;
+import org.opensearch.jobscheduler.spi.schedule.IntervalSchedule;
 import org.opensearch.ml.common.MLTask;
 import org.opensearch.ml.common.MLTaskState;
 import org.opensearch.ml.common.MLTaskType;
@@ -51,6 +56,7 @@ import org.opensearch.ml.common.exception.MLException;
 import org.opensearch.ml.common.exception.MLLimitExceededException;
 import org.opensearch.ml.common.exception.MLResourceNotFoundException;
 import org.opensearch.ml.engine.indices.MLIndicesHandler;
+import org.opensearch.ml.jobs.MLBatchPredictTaskUpdateJobParameter;
 import org.opensearch.search.builder.SearchSourceBuilder;
 import org.opensearch.threadpool.ThreadPool;
 
@@ -261,6 +267,68 @@ public class MLTaskManager {
         return res;
     }
 
+    // this is a blocking operation.
+    // public void getAllPendingBatchPredictTaskIds() {
+    // List<String> tasks = new ArrayList<>();
+    // // create a search request for the task index
+    // SearchSourceBuilder sourceBuilder = new SearchSourceBuilder();
+    // BoolQueryBuilder boolQuery = QueryBuilders.boolQuery()
+    // .must(QueryBuilders.termQuery("task_type", "BATCH_PREDICTION")) //TODO: check again
+    // .must(QueryBuilders.termQuery("function_name", "REMOTE"))
+    // .must(QueryBuilders.termQuery("state", "RUNNING"));
+    //
+    // sourceBuilder.query(boolQuery);
+    // sourceBuilder.fetchSource(new String[]{"_id"}, null);
+    //
+    // SearchRequest searchRequest = new SearchRequest(ML_TASK_INDEX);
+    // searchRequest.source(sourceBuilder);
+    //
+    // client.search(searchRequest, ActionListener.wrap(response -> {
+    // if (response == null || response == null || response.getHits().getHits().length == 0) {
+    // log.info("No tasks found");
+    // return null;
+    // }
+    //
+    // SearchHit[] searchHits = response.getHits().getHits();
+    // for (SearchHit searchHit : searchHits) {
+    // log.info("search hit id: {}", searchHit.getId());
+    // tasks.add(searchHit.getId());
+    // }
+    //
+    // log.info("tasks insed bla bla " + tasks.toString());
+    // return tasks;
+    // }, e -> {
+    // if (e instanceof IndexNotFoundException) {
+    // log.info("No tasks found");
+    // return null;
+    // } else {
+    // log.error("Failed to search for tasks to be updated ", e);
+    // return null;
+    // }
+    // }));
+    //
+    //// ActionFuture<SearchResponse> actionFuture;
+    //// actionFuture = client.search(searchRequest);
+    //// try{
+    //// SearchResponse response = actionFuture.get();
+    //// if (response == null || response.getHits() == null || response.getHits().getHits().length == 0) {
+    //// log.info("No tasks found");
+    //// return null;
+    //// }
+    ////
+    //// SearchHit[] searchHits = response.getHits().getHits();
+    //// for (SearchHit searchHit : searchHits) {
+    //// log.info("search hit id: {}", searchHit.getId());
+    //// tasks.add(searchHit.getId());
+    //// }
+    //// }
+    //// catch (InterruptedException | ExecutionException e) {
+    //// log.error("Failed to search pending ML tasks ", e);
+    //// }
+    //// log.info("tasks insed bla bla " + tasks.toString());
+    // return tasks;
+    // }
+
     /**
      * Clear all tasks.
      */
@@ -442,6 +510,29 @@ public class MLTaskManager {
             }
         }
         return Arrays.asList(runningDeployModelTaskIds.toArray(new String[0]), runningDeployModelIds.toArray(new String[0]));
+    }
+
+    public void startTaskPollingJob() throws IOException {
+        String id = "ml_batch_task_polling_job";
+        String jobName = "poll_batch_jobs";
+        String interval = "1";
+        Long lockDurationSeconds = 20L;
+
+        MLBatchPredictTaskUpdateJobParameter jobParameter = new MLBatchPredictTaskUpdateJobParameter(
+            jobName,
+            new IntervalSchedule(Instant.now(), Integer.parseInt(interval), ChronoUnit.MINUTES),
+            lockDurationSeconds,
+            null
+        );
+        IndexRequest indexRequest = new IndexRequest()
+            .index(TASK_POLLING_JOB_INDEX)
+            .id(id)
+            .source(jobParameter.toXContent(JsonXContent.contentBuilder(), null))
+            .setRefreshPolicy(WriteRequest.RefreshPolicy.IMMEDIATE);
+
+        client.index(indexRequest, ActionListener.wrap(r -> { log.info("Indexed ml task polling job successfully {}"); }, e -> {
+            log.error("Failed to index task polling job", e);
+        }));
     }
 
 }

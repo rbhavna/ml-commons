@@ -15,11 +15,7 @@ import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.spy;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
-import static org.opensearch.ml.settings.MLCommonsSettings.ML_COMMONS_REMOTE_JOB_STATUS_CANCELLED_REGEX;
-import static org.opensearch.ml.settings.MLCommonsSettings.ML_COMMONS_REMOTE_JOB_STATUS_CANCELLING_REGEX;
-import static org.opensearch.ml.settings.MLCommonsSettings.ML_COMMONS_REMOTE_JOB_STATUS_COMPLETED_REGEX;
-import static org.opensearch.ml.settings.MLCommonsSettings.ML_COMMONS_REMOTE_JOB_STATUS_EXPIRED_REGEX;
-import static org.opensearch.ml.settings.MLCommonsSettings.ML_COMMONS_REMOTE_JOB_STATUS_FIELD;
+import static org.opensearch.ml.settings.MLCommonsSettings.*;
 
 import java.io.IOException;
 import java.util.Arrays;
@@ -68,7 +64,9 @@ import org.opensearch.ml.common.output.model.ModelTensors;
 import org.opensearch.ml.common.transport.MLTaskResponse;
 import org.opensearch.ml.common.transport.task.MLTaskGetRequest;
 import org.opensearch.ml.common.transport.task.MLTaskGetResponse;
+import org.opensearch.ml.engine.MLEngine;
 import org.opensearch.ml.engine.encryptor.EncryptorImpl;
+import org.opensearch.ml.engine.ingest.S3DataIngestion;
 import org.opensearch.ml.helper.ConnectorAccessControlHelper;
 import org.opensearch.ml.helper.ModelAccessControlHelper;
 import org.opensearch.ml.model.MLModelManager;
@@ -119,6 +117,9 @@ public class GetTaskTransportActionTests extends OpenSearchTestCase {
     private MLModelManager mlModelManager;
 
     @Mock
+    private S3DataIngestion s3DataIngestion;
+
+    @Mock
     private MLTaskManager mlTaskManager;
 
     @Mock
@@ -126,6 +127,9 @@ public class GetTaskTransportActionTests extends OpenSearchTestCase {
 
     @Rule
     public ExpectedException exceptionRule = ExpectedException.none();
+
+    @Mock
+    MLEngine mlEngine;
 
     GetTaskTransportAction getTaskTransportAction;
     MLTaskGetRequest mlTaskGetRequest;
@@ -143,6 +147,7 @@ public class GetTaskTransportActionTests extends OpenSearchTestCase {
             .put(ML_COMMONS_REMOTE_JOB_STATUS_CANCELLED_REGEX.getKey(), "(stopped|cancelled)")
             .put(ML_COMMONS_REMOTE_JOB_STATUS_CANCELLING_REGEX.getKey(), "(stopping|cancelling)")
             .put(ML_COMMONS_REMOTE_JOB_STATUS_EXPIRED_REGEX.getKey(), "(expired|timeout)")
+            .put(ML_COMMONS_REMOTE_JOB_STATUS_FAILED_REGEX.getKey(), "(failed)")
             .build();
         threadContext = new ThreadContext(settings);
         when(client.threadPool()).thenReturn(threadPool);
@@ -163,7 +168,8 @@ public class GetTaskTransportActionTests extends OpenSearchTestCase {
                             ML_COMMONS_REMOTE_JOB_STATUS_COMPLETED_REGEX,
                             ML_COMMONS_REMOTE_JOB_STATUS_CANCELLED_REGEX,
                             ML_COMMONS_REMOTE_JOB_STATUS_CANCELLING_REGEX,
-                            ML_COMMONS_REMOTE_JOB_STATUS_EXPIRED_REGEX
+                            ML_COMMONS_REMOTE_JOB_STATUS_EXPIRED_REGEX,
+                            ML_COMMONS_REMOTE_JOB_STATUS_FAILED_REGEX
                         )
                 )
             );
@@ -182,7 +188,8 @@ public class GetTaskTransportActionTests extends OpenSearchTestCase {
                 mlTaskManager,
                 mlModelManager,
                 mlFeatureEnabledSetting,
-                settings
+                settings,
+                mlEngine
             )
         );
 
